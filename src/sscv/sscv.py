@@ -100,14 +100,6 @@ class SSCVStructure(Structure):
 
         return mass6D, CoG
 
-    def get_mesh(self, file, show=False):
-        file = Path(file)
-        if file.suffix != '.msh':
-            raise ValueError(f'Expected a .msh extesions, got {file.suffix}')
-        file = file.with_suffix('.msh')
-
-    
-
     def define_hull_components(self) -> pd.DataFrame:  # ?? is df a usefull way to do this? Or use a class?
         vl = self.parameters.VesselLength['m']
         vw = self.parameters.VesselWidth['m']
@@ -230,28 +222,6 @@ class SSCVStructure(Structure):
                 component['Width'],
                 component['Height'])))
 
-        vw = self.parameters.VesselWidth['m']
-        pontoon_ps.translate(dy=vw-w)
-
-        cl = self.parameters.ColumnLength['m']
-        cw = self.parameters.ColumnWidth['m']
-        ch = self.parameters.ColumnHeight['m']
-        column_template = utils.VolumeComponent(3, occ.add_box(0, 0, 0, cl, cw, ch))
-
-        n = self.parameters.NumberOfColumnsPerPontoon[None]
-        xlocations = np.linspace(0+2, l-2-cl, n)
-        columns = []
-        for y in [(w-cw)/2, vw-w+(w-cw)/2]:
-            for x in xlocations:
-                column = column_template.copy()
-                column.translate(dx=x, dy=y, dz=h)
-                columns.append(column)
-
-        column_template.remove(recursive=True)
-        sscv = pontoon_ps.fuse([pontoon_sb] + columns)
-
-        geometry = pontoon_ps.fuse([pontoon_sb] + columns)
-        
         geometry = component3D[0].fuse(component3D[1:])
 
         if show:
@@ -301,7 +271,7 @@ class SSCVStructure(Structure):
     def get_area_moment_of_inertia(self, areas: List[tuple]) -> Tuple[float, np.array, np.array]:
         """Calculate the combined surface area, centroid and moment of inertia of a list
         of area dimTags.
-        
+
         Parameters:
             areas:List[tuple]
                 List of gmsh area dimTags, e.g. [(2,1), (2,2), (2,3)] for areas 1, 2 and 3.
@@ -635,7 +605,6 @@ class SSCVNaval(Naval):
 
         self.add_mass_component('DeckLoad', 'Project', projdeckloadmass, projdeckloadlcg, projdeckloadtcg, projdeckloadvcg)
 
-
     def get_center_of_gravity(self):
 
         mass_components = self.mass_components
@@ -714,6 +683,5 @@ if __name__ == "__main__":
     my_nav = SSCVNaval(parameters=naval_parameters, structure=my_struct)
 
     my_nav.define_mass_components()
-
 
     my_nav.structure.parameters
