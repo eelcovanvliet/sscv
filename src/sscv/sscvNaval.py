@@ -325,6 +325,50 @@ class SSCVNaval(Naval):
 
         return center_of_gravity
 
+    def ballast_vessel(self, required_draft: float):
+        """Function to determine required ballast for level vessel at required draft
+
+        Args:
+            required_draft (float): _description_
+
+        Returns:
+            _type_: _description_
+        """
+
+        water_density = self.parameters.WaterDensity['metric_ton / meter ** 3']
+        ballastTanks = self.structure.ballasttanks
+        ballastWater = np.zeros(ballastTanks.shape[0])
+
+        vessel_load_mass = np.sum(self.mass_components['Mass'])
+        vessel_load_lcg = np.sum(self.mass_components['Mass'] * self.mass_components['LCG']) / vessel_load_mass
+
+        # Get required displacement and LCG (above LCB)
+        required_displacement_vol = self.get_displacement(required_draft)
+        required_displacement_mass = required_displacement_vol * water_density
+        required_lcg, _, _ = self.get_center_of_buoyancy(required_draft)
+
+        # Calculate ballast mass and CoG
+        required_ballast_mass = required_displacement_mass - vessel_load_mass
+        required_ballast_lcg = (required_lcg * required_displacement_mass - vessel_load_lcg * vessel_load_mass) / required_ballast_mass
+
+        if required_ballast_mass < 0:
+            return ballastWater, 'VesselAndLoadToHeavyForDraft'
+        elif required_ballast_mass > np.sum(ballastTanks['ballastVolume'] * water_density):
+            return ballastWater, 'NotSufficientBallastWaterAvailableForDraft'
+
+        # Fill ballast tanks -> for simplification reasoning only looking at PS (assumption symmetric ballast between both sides)
+        selectedTanks = ballastTanks[ballastTanks['y'] >= 0]
+        required_ballast_mass_one_side = required_ballast_mass / 2
+
+        # Initial fill of ballast tanks -> aim for low CoG
+        capacity_pontoons = np.sum(selectedTanks[selectedTanks['Name'].str.contains('P')]['ballastVolume'] * water_density)
+
+        if capacity_pontoons > required_ballast_mass_one_side:
+            
+
+
+        return ballastWater, 'VesselBallastedToEvenKeelAndDraft'
+
     @property
     def parameters(self) -> SSCVNavalParameters:
         return self._parameters
