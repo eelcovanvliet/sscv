@@ -2,6 +2,7 @@
 gmsh-utils @ git+https://hmc-heerema@dev.azure.com/hmc-heerema/HES%20Internal/_git/gmsh-utils@main 
 hivemind @ git+https://github.com/eelcovanvliet/hivemind.git@master 
 OrcFxAPI 
+matplotlib 
 pytest 
 pytest-cov 
 -e . 
