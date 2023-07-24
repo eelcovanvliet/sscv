@@ -28,6 +28,7 @@ class SSCVDesign(ParameterSet):
     PontoonVCB: Parameter = 0 * d
     PontoonLCB: Parameter = 0 * d
     PontoonBallastCapacity: Parameter = 0 * d
+    PontoonNumberOfBallastTanks: Parameter = 0 * d
 
     NumberOfColumnsPerPontoon: Parameter = 0 * d
     ColumnLength: Parameter = 0 * m
@@ -58,7 +59,7 @@ class SSCVStructure(Structure):
     def __init__(self, parameters: SSCVDesign) -> None:
         self._parameters = parameters
         self._hullcomponents = self.define_hull_components()
-        self._hydrostatics = self.get_hydrostatics(draft_max=(self.parameters.PontoonHeight['m'] + self.parameters.ColumnHeight['m']))
+        self._ballasttanks = self.define_ballast_tanks()
 
     def change_state(self):
         raise NotImplementedError()
@@ -78,7 +79,7 @@ class SSCVStructure(Structure):
 
         # Mass matrix
         mass6D = np.eye(6)
-        displacement = self.get_displacement(ph+ch+dh)
+        displacement = np.sum(self.hullcomponents['Length'] * self.hullcomponents['Width'] * self.hullcomponents['Height'] * self.hullcomponents['Cb'])
         Lightship = displacement * self.parameters.LightshipWeightFactor[None]
 
         kxx = self.parameters.LightshipWeightKxx[None] * vw
@@ -195,6 +196,50 @@ class SSCVStructure(Structure):
 
         return hull_components
 
+    def define_ballast_tanks(self):  # ToDo implement reduction of ballast capacity due to fuel/fresh water tanks!!
+        pnumberoftanks = self.parameters.PontoonNumberOfBallastTanks[None]
+
+        ballast_tanks = pd.DataFrame()
+
+        for _, hullComponent in self.hullcomponents.iterrows():
+
+            if ('P' in hullComponent['Name']) and (pnumberoftanks > 0):
+                pl = hullComponent['Length']
+
+                for ballasttank in range(pnumberoftanks):
+
+                    x_tanks = [0.167 * pl, 0.5 * pl, 0.84 * pl]  # ?? why is this choice made?
+                    x_tank = x_tanks[ballasttank]
+                    # x_tank = (pl / (pnumberoftanks + 1)) * (ballasttank + 1)
+
+                    temp_df = pd.DataFrame({
+                        'Name': [f'BT_{hullComponent["Name"]}_{ballasttank + 1}'],
+                        'HullComponent': [hullComponent['Name']],
+                        'x': [x_tank],
+                        'y': [hullComponent['y']],
+                        'z_min': [hullComponent['z']],
+                        'z_max': [hullComponent['z'] + hullComponent['Height']],
+                        'ballastVolume': [hullComponent['ballastVolume'] / pnumberoftanks]
+                    })
+
+                    ballast_tanks = pd.concat([ballast_tanks, temp_df], ignore_index=True)
+
+            if 'C' in hullComponent['Name']:
+
+                temp_df = pd.DataFrame({
+                    'Name': [f'BT_{hullComponent["Name"]}_{1}'],
+                    'HullComponent': [hullComponent['Name']],
+                    'x': [hullComponent['x']],
+                    'y': [hullComponent['y']],
+                    'z_min': [hullComponent['z']],
+                    'z_max': [hullComponent['z'] + hullComponent['Height']],
+                    'ballastVolume': [hullComponent['ballastVolume']]
+                })
+
+                ballast_tanks = pd.concat([ballast_tanks, temp_df], ignore_index=True)
+
+        return ballast_tanks
+
     def get_geometry(self, show=False) -> utils.VolumeComponent:
         """Start a new gmsh sessions and create the geometry of the sscv
 
@@ -291,6 +336,10 @@ class SSCVStructure(Structure):
     @property
     def hullcomponents(self) -> pd.DataFrame:
         return self._hullcomponents
+    
+    @property
+    def ballasttanks(self) -> pd.DataFrame:
+        return self._ballasttanks
 
     @property
     def possible_states(self):
@@ -303,7 +352,3 @@ class SSCVStructure(Structure):
     @property
     def state(self):
         raise NotImplementedError()
-
-    @property
-    def hydrostatics(self):
-        return self._hydrostatics

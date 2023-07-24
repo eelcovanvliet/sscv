@@ -51,6 +51,7 @@ class SSCVNaval(Naval):
     def __init__(self, parameters: SSCVNavalParameters, structure: SSCVStructure):
         self._parameters = parameters
         self._structure = structure
+        self._hydrostatics = self.get_hydrostatics(draft_max=(self.structure.parameters.PontoonHeight['m'] + self.structure.parameters.ColumnHeight['m']))
         self._mass_components = pd.DataFrame()
 
     def change_state(self):
@@ -164,7 +165,7 @@ class SSCVNaval(Naval):
         ph = self.structure.parameters.PontoonHeight['m']
         ch = self.structure.parameters.ColumnHeight['m']
         selected = self.structure.hullcomponents
-        
+
         if ph + ch < draft:
             raise ValueError('Draft exceeds vessel depth')
 
@@ -185,6 +186,7 @@ class SSCVNaval(Naval):
 
     def get_moment_of_waterplane_area(self, draft: float):
         ph = self.structure.parameters.PontoonHeight['m']
+        pl = self.structure.parameters.PontoonLength['m']
         ch = self.structure.parameters.ColumnHeight['m']
         hullComponents = self.structure.hullcomponents
 
@@ -196,7 +198,7 @@ class SSCVNaval(Naval):
             raise NotImplementedError()
 
         It = np.sum(1 / 12 * selected['Cb'] * selected['Length'] * selected['Width'] ** 3 + selected['Cb'] * selected['Length'] * selected['Width'] * selected['y']**2)
-        Il = np.sum(1 / 12 * selected['Cb'] * selected['Width'] * selected['Length'] ** 3 + selected['Cb'] * selected['Length'] * selected['Width'] * (selected['x'] - self.parameters.PontoonLength['m'] / 2)**2)
+        Il = np.sum(1 / 12 * selected['Cb'] * selected['Width'] * selected['Length'] ** 3 + selected['Cb'] * selected['Length'] * selected['Width'] * (selected['x'] - pl / 2)**2)
 
         return It, Il
 
@@ -211,7 +213,7 @@ class SSCVNaval(Naval):
         return KMt, KMl
 
     def get_hydrostatics(self, draft_max: float, draft_min: float = 0, delta_draft: float = 0.1):
-        waterdensity = self.parameters.WaterDensity
+        waterdensity = self.parameters.WaterDensity['metric_ton / meter ** 3']
         drafts = np.arange(draft_min, draft_max + delta_draft, delta_draft)
 
         hydrostatics = pd.DataFrame()
@@ -224,7 +226,7 @@ class SSCVNaval(Naval):
 
             temp_df = pd.DataFrame({
                 'Draft': [draft],
-                'Mass': [displacement*waterdensity],
+                'Mass': [displacement * waterdensity],
                 'Displacement': [displacement],
                 'WaterplaneArea': [waterplane_area],
                 'LCB': [lcb],
@@ -342,6 +344,10 @@ class SSCVNaval(Naval):
     @property
     def structure(self) -> SSCVStructure:
         return self._structure
+
+    @property
+    def hydrostatics(self):
+        return self._hydrostatics
 
     @property
     def mass_components(self) -> pd.DataFrame:
