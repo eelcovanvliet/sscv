@@ -14,8 +14,6 @@ m = units.meter
 d = units.dimensionless
 mT = units.metric_ton
 
-WATERDENSITY = 1.025  # ToDo create general settings file
-
 
 class SSCVDesign(ParameterSet):
     VesselLength: Parameter = 0 * m
@@ -266,64 +264,6 @@ class SSCVStructure(Structure):
                 water_crossing_surfaces.append(area)
         return water_crossing_surfaces
 
-    def get_area_moment_of_inertia(self, areas: List[tuple]) -> Tuple[float, np.array, np.array]:
-        """Calculate the combined surface area, centroid and moment of inertia of a list
-        of area dimTags.
-
-        Parameters:
-            areas:List[tuple]
-                List of gmsh area dimTags, e.g. [(2,1), (2,2), (2,3)] for areas 1, 2 and 3.
-
-        Returns:
-            surface_area:float
-                Total surface area of the water crossing surfaces
-            surface_center:np.array[float] size (3,)
-                The global position of the area centroid
-            surface_moi: np.array[float] size (3,3)
-                The area moment of inertia matrix wrt the center_of_surface
-
-        """
-        # Get the inertial properties of each surface
-        II, masses, cogs = [], [], []
-        for area in areas:
-            mass = gmsh.model.occ.get_mass(2, area[1])  # NOTE: mass == surface area
-            cog = gmsh.model.occ.get_center_of_mass(2, area[1])
-            I = gmsh.model.occ.get_matrix_of_inertia(2, area[1])  # NOTE: wrt cog
-            masses.append(mass)
-            cogs.append(cog)
-            II.append(I)
-
-        # Compute the combined inertial properties using parallel axis theorem
-        surface_area, surface_center, surface_moi = utils.parallel_axis_theorem(masses, cogs, II)
-        # NOTE: waterplane_moi wrt waterplane_center
-        return surface_area, surface_center, surface_moi
-
-    def get_waterplane_properties(self, draft: float, roll: float, show=False) -> Tuple[float, np.array, np.array]:
-        """Compute and return the inertial properties of the surfaces outlined by the vessel water line.
-
-        Parameters:
-            draft:float
-                The draft of the vessel wrt keel in meters
-            roll:
-                The roll of the vessel in degrees
-
-        Returns:
-            area:float
-                Total surface area of the water crossing surfaces
-            center_of_surface:np.array[float] size (3,)
-                The global position of the area centroid
-            area_moment_of_inertia: np.array[float] size (3,3)
-                The area moment of inertia matrix wrt the center_of_surface
-
-        """
-        geometry = self.get_geometry()
-        water_crossing_surfaces = self.cut_geometry(geometry, draft, roll)
-        area, center_of_surface, area_moment_of_inertia = self.get_area_moment_of_inertia(water_crossing_surfaces)
-        if show:
-            utils.ui.show_entities(water_crossing_surfaces, recursive=True, suppress_others=True)
-            utils.ui.start_ui(mode='geo')
-        return area, center_of_surface, area_moment_of_inertia
-
     def get_mesh(self,  file, show=False):
         file = Path(file)
         if file.suffix != '.msh':
@@ -343,121 +283,6 @@ class SSCVStructure(Structure):
         if show:
             utils.ui.start_ui(mode='mesh')
         return self.mesh
-
-    def get_waterplane_area(self, draft: float):
-        hullComponents = self.hullcomponents
-
-        if (draft >= 0) and (draft <= self.parameters.PontoonHeight['m']):
-            selected = hullComponents[hullComponents['Name'].str.contains('P')]
-        elif (draft > self.parameters.PontoonHeight['m']) and (draft <= self.parameters.PontoonHeight['m'] + self.parameters.ColumnHeight['m']):
-            selected = hullComponents[hullComponents['Name'].str.contains('C')]
-        else:
-            raise NotImplementedError()
-
-        waterplane_area = np.sum(selected['Length'] * selected['Width'] * selected['Cb'])
-
-        return waterplane_area
-
-    def get_displacement_hull_components(self, draft: float):
-        """Function that calculates the displacement per hull component:
-          1. Checks local water level per hull component
-          2. Uses local water level per hull component and shape to calculate displacement
-
-        Args:
-            draft (float): water depth with respect to vessel keel
-
-        Returns:
-            displacement (pd.Dataframe): pandas dataframe series with displacement per hull component
-        """
-        hullComponents = self.hullcomponents
-
-        local_water_level_components = np.maximum(np.zeros(len(hullComponents)), np.minimum(draft - hullComponents['z'], hullComponents['Height']))
-        displacement = hullComponents['Length'] * hullComponents['Width'] * hullComponents['Cb'] * local_water_level_components
-
-        return displacement
-
-    def get_displacement(self, draft: float):
-
-        displacement = np.sum(self.get_displacement_hull_components(draft))
-
-        return displacement
-
-    def get_center_of_buoyancy(self, draft: float):
-
-        if self.parameters.PontoonHeight['m'] + self.parameters.ColumnHeight['m'] < draft:
-            raise ValueError('Draft exceeds vessel depth')
-
-        selected = self.hullcomponents
-
-        displacement = self.get_displacement_hull_components(draft)
-
-        local_water_level_components = np.maximum(np.zeros(len(selected)), np.minimum(draft - selected['z'], selected['Height']))
-        local_vcb_components = local_water_level_components * selected['VCB']
-        global_vcb_components = local_vcb_components + selected['z']
-        vertical_center_of_buoyancy = np.sum(displacement * global_vcb_components) / np.sum(displacement)
-
-        local_lcb_components = selected['Length'] * selected['LCB'] - selected['Length'] / 2
-        global_lcb_components = local_lcb_components + selected['x']
-        longitudional_center_of_buoyancy = np.sum(displacement * global_lcb_components) / np.sum(displacement)
-
-        center_of_buoyancy = [longitudional_center_of_buoyancy, 0, vertical_center_of_buoyancy]
-
-        return center_of_buoyancy
-
-    def get_moment_of_waterplane_area(self, draft: float):
-        hullComponents = self.hullcomponents
-
-        if (draft >= 0) and (draft <= self.parameters.PontoonHeight['m']):
-            selected = hullComponents[hullComponents['Name'].str.contains('P')]
-        elif (draft > self.parameters.PontoonHeight['m']) and (draft <= self.parameters.PontoonHeight['m'] + self.parameters.ColumnHeight['m']):
-            selected = hullComponents[hullComponents['Name'].str.contains('C')]
-        else:
-            raise NotImplementedError()
-
-        It = np.sum(1 / 12 * selected['Cb'] * selected['Length'] * selected['Width'] ** 3 + selected['Cb'] * selected['Length'] * selected['Width'] * selected['y']**2)
-        Il = np.sum(1 / 12 * selected['Cb'] * selected['Width'] * selected['Length'] ** 3 + selected['Cb'] * selected['Length'] * selected['Width'] * (selected['x'] - self.parameters.PontoonLength['m'] / 2)**2)
-
-        return It, Il
-
-    def get_km(self, draft: float):
-        It, Il = self.get_moment_of_waterplane_area(draft)
-        displacement = self.get_displacement(draft)
-        center_of_buoyancy = self.get_center_of_buoyancy(draft)
-
-        KMt = It / displacement + center_of_buoyancy[2]
-        KMl = Il / displacement + center_of_buoyancy[2]
-
-        return KMt, KMl
-
-    def get_hydrostatics(self, draft_max: float, draft_min: float = 0, delta_draft: float = 0.1):
-
-        drafts = np.arange(draft_min, draft_max + delta_draft, delta_draft)
-
-        hydrostatics = pd.DataFrame()
-        for draft in drafts:
-            displacement = self.get_displacement(draft)
-            waterplane_area = self.get_waterplane_area(draft)
-            lcb, tcb, vcb = self.get_center_of_buoyancy(draft)
-            kmt, kml = self.get_km(draft)
-            it, il = self.get_moment_of_waterplane_area(draft)
-
-            temp_df = pd.DataFrame({
-                'Draft': [draft],
-                'Mass': [displacement*WATERDENSITY],
-                'Displacement': [displacement],
-                'WaterplaneArea': [waterplane_area],
-                'LCB': [lcb],
-                'TCB': [tcb],
-                'VCB': [vcb],
-                'KMt': [kmt],
-                'KMl': [kml],
-                'It': [it],
-                'Il': [il],
-            })
-
-            hydrostatics = pd.concat([hydrostatics, temp_df], ignore_index=True)
-
-        return hydrostatics
 
     @property
     def parameters(self) -> SSCVDesign:
