@@ -144,7 +144,7 @@ class SSCVStructure(Structure):
                     'x': [pl/2],
                     'y': [y_pontoon_distance[pontoonIndex]],
                     'z': [0],
-                    'ballastVolume': [pl*pw*ph*pballast],
+                    'ballastCapacityVolume': [pl*pw*ph*pballast],
                 })
 
             pontoonName += 1
@@ -172,7 +172,7 @@ class SSCVStructure(Structure):
                     'x': [x_column_distance[columnIndex]],
                     'y': [y_column_distance[pontoonIndex]],
                     'z': [ph],
-                    'ballastVolume': [cl*cw*ch*cballast],
+                    'ballastCapacityVolume': [cl*cw*ch*cballast],
                 })
 
                 columnName += 1
@@ -190,7 +190,7 @@ class SSCVStructure(Structure):
                     'x': [pl - vl/2],
                     'y': [0],
                     'z': [ph + ch],
-                    'ballastVolume': [0],
+                    'ballastCapacityVolume': [0],
                 })
         hull_components = pd.concat([hull_components, temp_df], ignore_index=True)
 
@@ -219,7 +219,7 @@ class SSCVStructure(Structure):
                         'y': [hullComponent['y']],
                         'z_min': [hullComponent['z']],
                         'z_max': [hullComponent['z'] + hullComponent['Height']],
-                        'ballastVolume': [hullComponent['ballastVolume'] / pnumberoftanks]
+                        'ballastCapacityVolume': [hullComponent['ballastCapacityVolume'] / pnumberoftanks]
                     })
 
                     ballast_tanks = pd.concat([ballast_tanks, temp_df], ignore_index=True)
@@ -233,7 +233,7 @@ class SSCVStructure(Structure):
                     'y': [hullComponent['y']],
                     'z_min': [hullComponent['z']],
                     'z_max': [hullComponent['z'] + hullComponent['Height']],
-                    'ballastVolume': [hullComponent['ballastVolume']]
+                    'ballastCapacityVolume': [hullComponent['ballastCapacityVolume']]
                 })
 
                 ballast_tanks = pd.concat([ballast_tanks, temp_df], ignore_index=True)
@@ -336,7 +336,7 @@ class SSCVStructure(Structure):
     @property
     def hullcomponents(self) -> pd.DataFrame:
         return self._hullcomponents
-    
+
     @property
     def ballasttanks(self) -> pd.DataFrame:
         return self._ballasttanks

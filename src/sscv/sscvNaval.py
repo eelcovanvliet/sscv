@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import List, Tuple, Dict
 import pandas as pd
 from .sscvStruct import SSCVDesign, SSCVStructure
+from scipy.optimize import minimize
 
 m = units.meter
 d = units.dimensionless
@@ -53,6 +54,8 @@ class SSCVNaval(Naval):
         self._structure = structure
         self._hydrostatics = self.get_hydrostatics(draft_max=(self.structure.parameters.PontoonHeight['m'] + self.structure.parameters.ColumnHeight['m']))
         self._mass_components = pd.DataFrame()
+        self.define_mass_components()
+        self._ballast_condition, self.ballast_status = self.ballast_vessel(self.parameters.VesselDraft['m'])
 
     def change_state(self):
         raise NotImplementedError()
@@ -298,7 +301,6 @@ class SSCVNaval(Naval):
         self.add_mass_component('Consumables', 'FreshWater', freshwatermass, freshwaterlcg, freshwatertcg, freshwatervcg)
 
         # Add deck loads
-
         typdeckloadmass = self.parameters.TypicalDeckLoad['metric_ton']
         typdeckloadlcg = self.parameters.TypicalDeckLoadLCG[None] * pl
         typdeckloadtcg = 0
@@ -313,7 +315,7 @@ class SSCVNaval(Naval):
 
         self.add_mass_component('DeckLoad', 'Project', projdeckloadmass, projdeckloadlcg, projdeckloadtcg, projdeckloadvcg)
 
-    def get_center_of_gravity(self):
+    def get_center_of_gravity_vessel_and_load(self):
 
         mass_components = self.mass_components
 
@@ -325,7 +327,42 @@ class SSCVNaval(Naval):
 
         return center_of_gravity
 
-    def ballast_vessel(self, required_draft: float):
+    def get_center_of_gravity_ballast(self):
+
+        ballast_condition = self.ballast_condition
+
+        longitudinal_center_of_gravity = np.sum(ballast_condition['BallastMass'] * ballast_condition['x']) / np.sum(ballast_condition['BallastMass'])
+        transverse_center_of_gravity = 0
+        vertical_center_of_gravity = np.sum(ballast_condition['BallastMass'] * ballast_condition['z']) / np.sum(ballast_condition['BallastMass'])
+
+        center_of_gravity = [longitudinal_center_of_gravity, transverse_center_of_gravity, vertical_center_of_gravity]
+
+        return center_of_gravity
+
+    def get_center_of_gravity_vessel_and_ballast(self):
+
+        mass_components = self.mass_components
+        ballast_condition = self.ballast_condition
+        vessel_draft = self.parameters.VesselDraft['m']
+        water_density = self.parameters.WaterDensity['metric_ton / m ** 3']
+
+        mass_vessel_load = np.sum(mass_components['Mass'])
+        mass_ballast = np.sum(ballast_condition['BallastMass'])
+
+        total_mass = mass_vessel_load + mass_ballast
+        displacement = self.get_displacement(vessel_draft)
+
+        if total_mass != displacement * water_density:
+            print(f'WARNING: vessel total mass of {total_mass:.2f} mT does not match displacment of {displacement * water_density :.2f} mT')
+
+        center_of_gravity_vessel_and_load = np.array(self.get_center_of_gravity_vessel_and_load())
+        center_of_gravity_ballast = np.array(self.get_center_of_gravity_ballast())
+
+        center_of_gravity_total = (center_of_gravity_vessel_and_load * mass_vessel_load + center_of_gravity_ballast * mass_ballast) / total_mass
+
+        return center_of_gravity_total
+
+    def ballast_vessel(self, required_draft: float) -> pd.DataFrame:  # !! IMPROVE NAMING ETC!!!
         """Function to determine required ballast for level vessel at required draft
 
         Args:
@@ -335,10 +372,20 @@ class SSCVNaval(Naval):
             _type_: _description_
         """
 
+        tolerance = 0.01
+
         water_density = self.parameters.WaterDensity['metric_ton / meter ** 3']
         ballastTanks = self.structure.ballasttanks
         ballastWater = np.zeros(ballastTanks.shape[0])
+        pl = self.structure.parameters.PontoonLength['m']
 
+        # Initialize ballast condition
+        ballastCondition = ballastTanks.copy()
+        ballastCondition['BallastVolume'] = np.zeros(ballastTanks.shape[0])
+        ballastCondition['Perc_fil'] = np.zeros(ballastTanks.shape[0])
+        ballastCondition['BallastMass'] = np.zeros(ballastTanks.shape[0])
+
+        # Get vessel mass properties
         vessel_load_mass = np.sum(self.mass_components['Mass'])
         vessel_load_lcg = np.sum(self.mass_components['Mass'] * self.mass_components['LCG']) / vessel_load_mass
 
@@ -352,22 +399,95 @@ class SSCVNaval(Naval):
         required_ballast_lcg = (required_lcg * required_displacement_mass - vessel_load_lcg * vessel_load_mass) / required_ballast_mass
 
         if required_ballast_mass < 0:
-            return ballastWater, 'VesselAndLoadToHeavyForDraft'
-        elif required_ballast_mass > np.sum(ballastTanks['ballastVolume'] * water_density):
-            return ballastWater, 'NotSufficientBallastWaterAvailableForDraft'
+            return ballastCondition, 'VesselAndLoadToHeavyForDraft'
+        elif required_ballast_mass > np.sum(ballastTanks['ballastCapacityVolume'] * water_density):
+            return ballastCondition, 'NotSufficientBallastWaterAvailableForDraft'
 
         # Fill ballast tanks -> for simplification reasoning only looking at PS (assumption symmetric ballast between both sides)
         selectedTanks = ballastTanks[ballastTanks['y'] >= 0]
+        amount_of_tanks_selected = selectedTanks.shape[0]
         required_ballast_mass_one_side = required_ballast_mass / 2
 
-        # Initial fill of ballast tanks -> aim for low CoG
-        capacity_pontoons = np.sum(selectedTanks[selectedTanks['Name'].str.contains('P')]['ballastVolume'] * water_density)
+        # Define objective and constraints for ballast function  # ToDo for future work implement free flooding effects in optimizer -> seperate optimizer from naval? (and upgrade for better results)
+        objective = lambda x: np.sum((((x / (selectedTanks['ballastCapacityVolume'] * water_density)) * (selectedTanks['z_max'] - selectedTanks['z_min'])) / 2 + selectedTanks['z_min']) * x) / np.sum(x)
 
-        if capacity_pontoons > required_ballast_mass_one_side:
-            
+        cons1 = lambda x: np.sum(x) - required_ballast_mass_one_side
+        cons2 = lambda x: np.sum(selectedTanks['x'] * x) / np.sum(x) - required_ballast_lcg
 
+        cons = (
+            {'type': 'eq', 'fun': cons1},
+            {'type': 'eq', 'fun': cons2},
+        )
 
-        return ballastWater, 'VesselBallastedToEvenKeelAndDraft'
+        lower_bound = np.zeros(selectedTanks.shape[0]).reshape(amount_of_tanks_selected, 1)
+        upper_bound = np.array(selectedTanks['ballastCapacityVolume'] * water_density).reshape(amount_of_tanks_selected, 1)
+        bounds = np.concatenate((lower_bound, upper_bound), axis=1)
+
+        # Define set of start conditions (as much mass at the aft, as much mass at the front, as much mass in pontoon) -> improve start condition feasibility (currently amount of requird ballast can be over max capacity)
+        start_conditions = []
+
+        divide_over_all_tanks = np.ones(amount_of_tanks_selected) * required_ballast_mass / amount_of_tanks_selected
+        start_conditions.append(divide_over_all_tanks)
+
+        divide_over_pontoons = np.zeros(amount_of_tanks_selected)
+        pontoon_tanks = selectedTanks['HullComponent'].str.contains('P')
+        divide_over_pontoons[np.where(pontoon_tanks)[0]] = (required_ballast_mass / np.sum(pontoon_tanks))
+        start_conditions.append(divide_over_pontoons)
+
+        # divide_over_aft_tanks = np.zeros(amount_of_tanks_selected)
+        # aft_tanks = selectedTanks['x'] < 0.5 * pl
+        # divide_over_aft_tanks[np.where(aft_tanks)[0]] = (required_ballast_mass / np.sum(aft_tanks))
+        # start_conditions.append(divide_over_aft_tanks)
+
+        ballastTankWaterMass = []
+        ballastTankVCG = []
+
+        solverresults = pd.DataFrame()
+        for nr_start_conditions in range(len(start_conditions)):
+            start_condition = start_conditions[nr_start_conditions]
+
+            bestVCG = 100
+            VCG_temp_results = []
+            ballastTankWaterMass_temp_results = []
+            for iteration in range(3):
+                optimizer_result = minimize(objective, start_condition, constraints=cons, bounds=bounds)
+
+                if np.sum(optimizer_result.x) - required_ballast_mass_one_side < tolerance:
+                    if np.sum(selectedTanks['x'] * optimizer_result.x) / np.sum(optimizer_result.x) - required_ballast_lcg < tolerance:
+                        temp_df = pd.DataFrame({
+                            'initial_start_condition': [nr_start_conditions],
+                            'iteration': [iteration],
+                            'start_condition': [start_condition],
+                            'BallastTankMass': [optimizer_result.x],
+                            'VCG': [optimizer_result.fun],
+                        })
+
+                        solverresults = pd.concat([solverresults, temp_df], ignore_index=True)
+
+                        VCG_temp_results.append(optimizer_result.fun)
+                        ballastTankWaterMass_temp_results.append(optimizer_result.x)
+
+                        if optimizer_result.fun < bestVCG:
+                            start_condition = optimizer_result.x
+                            bestVCG = optimizer_result.fun
+
+            if len(VCG_temp_results) > 0:
+                ballastTankWaterMass.append(ballastTankWaterMass_temp_results[np.argmin(VCG_temp_results)])
+                ballastTankVCG.append(min(VCG_temp_results))
+
+        ballastWater = ballastTankWaterMass[np.argmin(ballastTankVCG)]
+
+        # Assign ballast to all tanks  # !! Not very robust but quick fix -> think about where to store ballast water
+        ballastWaterAllTanks = np.zeros(ballastTanks.shape[0])
+        ballastWaterAllTanks[selectedTanks.index] = ballastWater
+        ballastWaterAllTanks[list(set(ballastTanks.index.values) - set(selectedTanks.index))] = ballastWater
+
+        ballastCondition['BallastVolume'] = ballastWaterAllTanks / water_density
+        ballastCondition['BallastMass'] = ballastWaterAllTanks
+        ballastCondition['z'] = (ballastCondition['BallastVolume'] / ballastCondition['ballastCapacityVolume']) * (ballastCondition['z_max'] - ballastCondition['z_min']) / 2 + ballastCondition['z_min']
+        ballastCondition['Perc_fil'] = ballastCondition['BallastVolume'] / ballastCondition['ballastCapacityVolume']
+
+        return ballastCondition, 'VesselBallastedToEvenKeelAndDraft'
 
     @property
     def parameters(self) -> SSCVNavalParameters:
@@ -396,6 +516,10 @@ class SSCVNaval(Naval):
     @property
     def mass_components(self) -> pd.DataFrame:
         return self._mass_components
+
+    @property
+    def ballast_condition(self) -> pd.DataFrame:
+        return self._ballast_condition
 
 
 if __name__ == "__main__":
