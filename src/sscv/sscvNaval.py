@@ -18,6 +18,7 @@ mT = units.metric_ton
 class SSCVNavalParameters(ParameterSet):
     WaterDepth: Parameter = 0 * m
     WaterDensity: Parameter = 1.025 * units.metric_ton/m**3
+    GravityConstant: Parameter = 9.81 * m / units.s ** 2
 
     VesselDraft: Parameter = 0 * m
 
@@ -60,11 +61,63 @@ class SSCVNaval(Naval):
     def change_state(self):
         raise NotImplementedError()
 
-    def get_natural_periods(self):
-        raise NotImplementedError()
+    def get_natural_periods(self):  # Todo implement added masses
+        g = self.parameters.GravityConstant['m / s ** 2']
+        water_density = self.parameters.WaterDensity['metric_ton / m ** 3']
+        draft = self.parameters.VesselDraft['m']
+        kxx_factor = self.structure.parameters.LightshipWeightKxx[None]
+        kyy_factor = self.structure.parameters.LightshipWeightKyy[None]
+        pl = self.structure.parameters.PontoonLength['m']
+        vw = self.structure.parameters.VesselWidth['m']
 
-    def get_stability(self):
-        raise NotImplementedError()
+        displacement = self.get_displacement(draft)
+        waterplane_area = self.get_waterplane_area(draft)
+        GMt, GMl = self.get_stability()
+
+        # Heave
+        stiffness_heave = waterplane_area * g * water_density
+        mass_heave = displacement * water_density
+        T_heave = self.calc_natural_period(stiffness_heave, mass_heave)
+
+        # Roll
+        stiffness_roll = displacement * water_density * g * GMt
+        mass_roll = (kxx_factor * vw) ** 2 * displacement * water_density
+        T_roll = self.calc_natural_period(stiffness_roll, mass_roll)
+
+        # Pitch
+        stiffness_pitch = displacement * water_density * g * GMl
+        mass_pitch = (kyy_factor * pl) ** 2 * displacement * water_density
+        T_pitch = self.calc_natural_period(stiffness_pitch, mass_pitch)
+
+        return T_heave, T_roll, T_pitch
+
+    @staticmethod
+    def calc_natural_period(stiffness: float, mass: float):
+
+        natural_period = (2 * np.pi) / np.sqrt((stiffness) / (mass))
+
+        return natural_period
+
+    def get_stability(self):  # Currently only initial stability GM (not GZ curve -> to be implemented and dynamic loss of hook load)
+
+        # Get parameters
+        draft = self.parameters.VesselDraft['m']
+        GMt_reduction = self.parameters.GMtreduction['m']
+        GMl_reduction = self.parameters.GMlreduction['m']
+
+        # Get required information
+        center_of_gravity = self.get_center_of_gravity_vessel_and_ballast()
+        kmt, kml = self.get_km(draft)
+
+        # GM calculation
+        GMt = kmt - center_of_gravity[2]
+        GMl = kml - center_of_gravity[2]
+
+        # Free flooding effect
+        GMt = GMt - GMt_reduction
+        GMl = GMl - GMl_reduction
+
+        return GMt, GMl
 
     def get_area_moment_of_inertia(self, areas: List[tuple]) -> Tuple[float, np.array, np.array]:
         """Calculate the combined surface area, centroid and moment of inertia of a list
