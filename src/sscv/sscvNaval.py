@@ -56,12 +56,18 @@ class SSCVNaval(Naval):
         self._hydrostatics = self.get_hydrostatics(draft_max=(self.structure.parameters.PontoonHeight['m'] + self.structure.parameters.ColumnHeight['m']))
         self._mass_components = pd.DataFrame()
         self.define_mass_components()
-        self._ballast_condition, self.ballast_status = self.ballast_vessel(self.parameters.VesselDraft['m'])
+        self._ballast_condition, self.ballast_status = self.ballast_vessel_to_draft(self.parameters.VesselDraft['m'])
 
     def change_state(self):
         raise NotImplementedError()
 
-    def get_natural_periods(self):  # Todo implement added masses
+    def get_natural_periods(self) -> Tuple[float, float, float]:  # Todo implement added masses
+        """Get the natural period for heave, roll, and pitch
+        Note: added masses not yet implemented
+
+        Returns:
+            T_heave, T_roll, T_pitch Tuple[float, float, float]: natural periods [s]
+        """
         g = self.parameters.GravityConstant['m / s ** 2']
         water_density = self.parameters.WaterDensity['metric_ton / m ** 3']
         draft = self.parameters.VesselDraft['m']
@@ -77,33 +83,47 @@ class SSCVNaval(Naval):
         # Heave
         stiffness_heave = waterplane_area * g * water_density
         mass_heave = displacement * water_density
-        T_heave = self.calc_natural_period(stiffness_heave, mass_heave)
+        T_heave = self.calculate_natural_period(stiffness_heave, mass_heave)
 
         # Roll
         stiffness_roll = displacement * water_density * g * GMt
         mass_roll = (kxx_factor * vw) ** 2 * displacement * water_density
-        T_roll = self.calc_natural_period(stiffness_roll, mass_roll)
+        T_roll = self.calculate_natural_period(stiffness_roll, mass_roll)
 
         # Pitch
         stiffness_pitch = displacement * water_density * g * GMl
         mass_pitch = (kyy_factor * pl) ** 2 * displacement * water_density
-        T_pitch = self.calc_natural_period(stiffness_pitch, mass_pitch)
+        T_pitch = self.calculate_natural_period(stiffness_pitch, mass_pitch)
 
         return T_heave, T_roll, T_pitch
 
     @staticmethod
-    def calc_natural_period(stiffness: float, mass: float):
+    def calculate_natural_period(stiffness: float, mass: float) -> float:
+        """Function that calculates natural period based on stiffness and mass
 
+        Args:
+            stiffness (float): stiffness of system
+            mass (float): mass of system
+
+        Returns:
+            natural period (float): natural period of the system [s]
+        """
         natural_period = (2 * np.pi) / np.sqrt((stiffness) / (mass))
 
         return natural_period
 
-    def get_stability(self):  # Currently only initial stability GM (not GZ curve -> to be implemented and dynamic loss of hook load)
+    def get_stability(self) -> Tuple[float, float]:  # Currently only initial stability GM (not GZ curve -> to be implemented and dynamic loss of hook load)
+        """Calculates the GMt and GMl properties of the vessel at vessel draft
+
+        Returns:
+            GMt (float): [m]
+            GMl (float): [m]
+        """
 
         # Get parameters
         draft = self.parameters.VesselDraft['m']
-        GMt_reduction = self.parameters.GMtreduction['m']
-        GMl_reduction = self.parameters.GMlreduction['m']
+        GMt_freefloodreduction = self.parameters.GMtreduction['m']
+        GMl_freefloodreduction = self.parameters.GMlreduction['m']
 
         # Get required information
         center_of_gravity = self.get_center_of_gravity_vessel_and_ballast()
@@ -114,8 +134,8 @@ class SSCVNaval(Naval):
         GMl = kml - center_of_gravity[2]
 
         # Free flooding effect
-        GMt = GMt - GMt_reduction
-        GMl = GMl - GMl_reduction
+        GMt = GMt - GMt_freefloodreduction
+        GMl = GMl - GMl_freefloodreduction
 
         return GMt, GMl
 
@@ -199,10 +219,10 @@ class SSCVNaval(Naval):
           2. Uses local water level per hull component and shape to calculate displacement
 
         Args:
-            draft (float): water depth with respect to vessel keel
+            draft (float): water depth with respect to vessel keel [m]
 
         Returns:
-            displacement (pd.Dataframe): pandas dataframe series with displacement per hull component
+            displacement (pd.Dataframe): pandas dataframe series with displacement per hull component [m3]
         """
         hullComponents = self.structure.hullcomponents
 
@@ -211,13 +231,33 @@ class SSCVNaval(Naval):
 
         return displacement
 
-    def get_displacement(self, draft: float):
+    def get_displacement(self, draft: float) -> float:
+        """Calculates the displacement of the vessel at given draft
+
+        Args:
+            draft (float): draft of vessel for displacement calculation [m]
+
+        Returns:
+            displacement (float): vessel displacement [m3]
+        """
 
         displacement = np.sum(self.get_displacement_hull_components(draft))
 
         return displacement
 
-    def get_center_of_buoyancy(self, draft: float):
+    def get_center_of_buoyancy(self, draft: float) -> Tuple[float, float, float]:
+        """ Defines center of buoyancy at selected draft
+
+        Args:
+            draft (float): Vessel draft [m]
+
+        Raises:
+            ValueError: If draft exceeds vessel depth
+
+        Returns:
+            center_of_buoyancy (List[float, float, float]): center of buoyancy for selected vessel draft [m]
+        """
+        # Input parameters from vessel
         ph = self.structure.parameters.PontoonHeight['m']
         ch = self.structure.parameters.ColumnHeight['m']
         selected = self.structure.hullcomponents
@@ -227,6 +267,7 @@ class SSCVNaval(Naval):
 
         displacement = self.get_displacement_hull_components(draft)
 
+        # Calculate center of buoyancy
         local_water_level_components = np.maximum(np.zeros(len(selected)), np.minimum(draft - selected['z'], selected['Height']))
         local_vcb_components = local_water_level_components * selected['VCB']
         global_vcb_components = local_vcb_components + selected['z']
@@ -240,12 +281,25 @@ class SSCVNaval(Naval):
 
         return center_of_buoyancy
 
-    def get_moment_of_waterplane_area(self, draft: float):
+    def get_moment_of_waterplane_area(self, draft: float) -> Tuple[float, float]:
+        """Calculate moment area of water plane size for selected draft
+
+        Args:
+            draft (float): _description_
+
+        Raises:
+            NotImplementedError: _description_
+
+        Returns:
+            Tuple[float, float]: _description_
+        """
+        # Input parameters from vessel
         ph = self.structure.parameters.PontoonHeight['m']
         pl = self.structure.parameters.PontoonLength['m']
         ch = self.structure.parameters.ColumnHeight['m']
         hullComponents = self.structure.hullcomponents
 
+        # Select applicable hull components
         if (draft >= 0) and (draft <= ph):
             selected = hullComponents[hullComponents['Name'].str.contains('P')]
         elif (draft > ph) and (draft <= ph + ch):
@@ -253,12 +307,21 @@ class SSCVNaval(Naval):
         else:
             raise NotImplementedError()
 
+        # Calculate moment area
         It = np.sum(1 / 12 * selected['Cb'] * selected['Length'] * selected['Width'] ** 3 + selected['Cb'] * selected['Length'] * selected['Width'] * selected['y']**2)
         Il = np.sum(1 / 12 * selected['Cb'] * selected['Width'] * selected['Length'] ** 3 + selected['Cb'] * selected['Length'] * selected['Width'] * (selected['x'] - pl / 2)**2)
 
         return It, Il
 
-    def get_km(self, draft: float):
+    def get_km(self, draft: float) -> Tuple[float, float]:
+        """Get the distance between keel and metacentric height for selected draft
+
+        Args:
+            draft (float): vessel draft [m]
+
+        Returns:
+            Kmt, Kml Tuple[float, float]: [m]
+        """
         It, Il = self.get_moment_of_waterplane_area(draft)
         displacement = self.get_displacement(draft)
         center_of_buoyancy = self.get_center_of_buoyancy(draft)
@@ -268,7 +331,17 @@ class SSCVNaval(Naval):
 
         return KMt, KMl
 
-    def get_hydrostatics(self, draft_max: float, draft_min: float = 0, delta_draft: float = 0.1):
+    def get_hydrostatics(self, draft_max: float, draft_min: float = 0, delta_draft: float = 0.1) -> pd.DataFrame:
+        """Create an overview of the hydrostatics for a range of drafts
+
+        Args:
+            draft_max (float): max draft in table
+            draft_min (float, optional): min draft in table. Defaults to 0.
+            delta_draft (float, optional): draft steps in table. Defaults to 0.1.
+
+        Returns:
+            pd.DataFrame: overview of hydrostatic properties for draft range
+        """
         waterdensity = self.parameters.WaterDensity['metric_ton / meter ** 3']
         drafts = np.arange(draft_min, draft_max + delta_draft, delta_draft)
 
@@ -299,6 +372,17 @@ class SSCVNaval(Naval):
         return hydrostatics
 
     def add_mass_component(self, mass_type: str, name: str, mass: float, lcg: float, tcg: float, vcg: float):
+        """Function to add a mass component to the vessel dataframe mass component
+
+        Args:
+            mass_type (str): _description_
+            name (str): _description_
+            mass (float): _description_ [mT]
+            lcg (float): global longitudional center of gravity [m]
+            tcg (float): global transverse center of gravity [m]
+            vcg (float): global vertical center of gravity [m]
+        """
+
         temp_df = pd.DataFrame({
             'Type': mass_type,
             'Name': name,
@@ -311,16 +395,25 @@ class SSCVNaval(Naval):
         self._mass_components = pd.concat([self.mass_components, temp_df], ignore_index=True)
 
     def define_mass_components(self):
+        """Adds mass components to vessel, currently fixed set of components:
+        - Vessel lightweight
+        - Crane
+        - Deck load (project and typical)
+        - Consumables (fuel and fresh water)
+        """
 
+        # Input parameters from vessel
         pl = self.structure.parameters.PontoonLength['m']
         ph = self.structure.parameters.PontoonHeight['m']
         ch = self.structure.parameters.ColumnHeight['m']
         dh = self.structure.parameters.DeckHeight['m']
 
         craneMaxCap = self.structure.parameters.CraneMaxCapacity['metric_ton']
+        craneBoomMassFactor = self.structure.parameters.CraneBoomMassFactor[None]
         craneBowDistance = 12
         craneRadius = self.parameters.CraneRadius['m']
         craneLiftingHeight = self.parameters.CraneLiftingHeight['m']
+        craneLoad = self.parameters.CraneLoad['metric_ton']
 
         deck_height = ph + ch + dh
 
@@ -329,8 +422,8 @@ class SSCVNaval(Naval):
         self.add_mass_component('Lightship', 'Lightweight', vessel_mass6D.diagonal()[0], vesselCoG[0], vesselCoG[1], vesselCoG[2])
 
         # Substract crane boom if load in crane
-        if self.parameters.CraneLoad['metric_ton'] > 0:
-            craneBoomMass = self.structure.parameters.CraneBoomMassFactor[None] * craneMaxCap
+        if craneLoad > 0:
+            craneBoomMass = craneBoomMassFactor * craneMaxCap
             self.add_mass_component('Lightship', 'CraneBoom', -craneBoomMass * 2, vesselCoG[0], vesselCoG[1], vesselCoG[2])
 
             # ToDo check VCG boom +-> factor 25 in parameters
@@ -368,7 +461,12 @@ class SSCVNaval(Naval):
 
         self.add_mass_component('DeckLoad', 'Project', projdeckloadmass, projdeckloadlcg, projdeckloadtcg, projdeckloadvcg)
 
-    def get_center_of_gravity_vessel_and_load(self):
+    def get_center_of_gravity_vessel_and_load(self) -> Tuple[float, float, float]:
+        """Get the center of gravity of the vessel and load components (excluding ballast)
+
+        Returns:
+            center_of_gravity Tuple[float, float, float]: center of gravity [m]
+        """
 
         mass_components = self.mass_components
 
@@ -380,7 +478,7 @@ class SSCVNaval(Naval):
 
         return center_of_gravity
 
-    def get_center_of_gravity_ballast(self):
+    def get_center_of_gravity_ballast_water(self):
 
         ballast_condition = self.ballast_condition
 
@@ -409,34 +507,14 @@ class SSCVNaval(Naval):
             print(f'WARNING: vessel total mass of {total_mass:.2f} mT does not match displacment of {displacement * water_density :.2f} mT')
 
         center_of_gravity_vessel_and_load = np.array(self.get_center_of_gravity_vessel_and_load())
-        center_of_gravity_ballast = np.array(self.get_center_of_gravity_ballast())
+        center_of_gravity_ballast = np.array(self.get_center_of_gravity_ballast_water())
 
         center_of_gravity_total = (center_of_gravity_vessel_and_load * mass_vessel_load + center_of_gravity_ballast * mass_ballast) / total_mass
 
         return center_of_gravity_total
 
-    def ballast_vessel(self, required_draft: float) -> pd.DataFrame:  # !! IMPROVE NAMING ETC!!!
-        """Function to determine required ballast for level vessel at required draft
-
-        Args:
-            required_draft (float): _description_
-
-        Returns:
-            _type_: _description_
-        """
-
-        tolerance = 0.01
-
+    def define_required_ballast_mass_cog(self, required_draft: float):
         water_density = self.parameters.WaterDensity['metric_ton / meter ** 3']
-        ballastTanks = self.structure.ballasttanks
-        ballastWater = np.zeros(ballastTanks.shape[0])
-        pl = self.structure.parameters.PontoonLength['m']
-
-        # Initialize ballast condition
-        ballastCondition = ballastTanks.copy()
-        ballastCondition['BallastVolume'] = np.zeros(ballastTanks.shape[0])
-        ballastCondition['Perc_fil'] = np.zeros(ballastTanks.shape[0])
-        ballastCondition['BallastMass'] = np.zeros(ballastTanks.shape[0])
 
         # Get vessel mass properties
         vessel_load_mass = np.sum(self.mass_components['Mass'])
@@ -450,6 +528,30 @@ class SSCVNaval(Naval):
         # Calculate ballast mass and CoG
         required_ballast_mass = required_displacement_mass - vessel_load_mass
         required_ballast_lcg = (required_lcg * required_displacement_mass - vessel_load_lcg * vessel_load_mass) / required_ballast_mass
+
+        return required_ballast_mass, required_ballast_lcg
+
+    def fill_ballast_tanks(self, required_ballast_mass: float, required_ballast_lcg: float, tolerance: float = 0.01) -> pd.DataFrame:  # !! IMPROVE NAMING ETC!!!
+        """Function to determine required ballast for level vessel at required draft
+
+        Args:
+            required_ballast_mass (float): required mass of all ballast [mT]
+            required_ballast_lcg (float): required lcg of all ballast [m]
+            tolerance (float): tolerance () Default 0.01
+
+        Returns:
+            ballast condition (pd.DataFrame): Dataframe containing the condition of the ballast tanks
+        """
+
+        water_density = self.parameters.WaterDensity['metric_ton / meter ** 3']
+        ballastTanks = self.structure.ballasttanks
+
+        # Initialize ballast condition
+        ballastCondition = ballastTanks.copy()
+        ballastCondition['BallastVolume'] = np.zeros(ballastTanks.shape[0])
+        ballastCondition['Perc_fil'] = np.zeros(ballastTanks.shape[0])
+        ballastCondition['BallastMass'] = np.zeros(ballastTanks.shape[0])
+        ballastCondition['z'] = np.zeros(ballastTanks.shape[0])
 
         if required_ballast_mass < 0:
             return ballastCondition, 'VesselAndLoadToHeavyForDraft'
@@ -487,11 +589,6 @@ class SSCVNaval(Naval):
         divide_over_pontoons[np.where(pontoon_tanks)[0]] = (required_ballast_mass / np.sum(pontoon_tanks))
         start_conditions.append(divide_over_pontoons)
 
-        # divide_over_aft_tanks = np.zeros(amount_of_tanks_selected)
-        # aft_tanks = selectedTanks['x'] < 0.5 * pl
-        # divide_over_aft_tanks[np.where(aft_tanks)[0]] = (required_ballast_mass / np.sum(aft_tanks))
-        # start_conditions.append(divide_over_aft_tanks)
-
         ballastTankWaterMass = []
         ballastTankVCG = []
 
@@ -528,12 +625,15 @@ class SSCVNaval(Naval):
                 ballastTankWaterMass.append(ballastTankWaterMass_temp_results[np.argmin(VCG_temp_results)])
                 ballastTankVCG.append(min(VCG_temp_results))
 
-        ballastWater = ballastTankWaterMass[np.argmin(ballastTankVCG)]
+        if len(VCG_temp_results) > 0:
+            SolverResultsBallastWater = ballastTankWaterMass[np.argmin(ballastTankVCG)]
+        else:
+            return ballastCondition, 'Not sufficient ballast capacity available'
 
         # Assign ballast to all tanks  # !! Not very robust but quick fix -> think about where to store ballast water
         ballastWaterAllTanks = np.zeros(ballastTanks.shape[0])
-        ballastWaterAllTanks[selectedTanks.index] = ballastWater
-        ballastWaterAllTanks[list(set(ballastTanks.index.values) - set(selectedTanks.index))] = ballastWater
+        ballastWaterAllTanks[selectedTanks.index] = SolverResultsBallastWater
+        ballastWaterAllTanks[list(set(ballastTanks.index.values) - set(selectedTanks.index))] = SolverResultsBallastWater
 
         ballastCondition['BallastVolume'] = ballastWaterAllTanks / water_density
         ballastCondition['BallastMass'] = ballastWaterAllTanks
@@ -541,6 +641,21 @@ class SSCVNaval(Naval):
         ballastCondition['Perc_fil'] = ballastCondition['BallastVolume'] / ballastCondition['ballastCapacityVolume']
 
         return ballastCondition, 'VesselBallastedToEvenKeelAndDraft'
+
+    def ballast_vessel_to_draft(self, required_draft: float) -> Tuple[pd.DataFrame, str]:
+        """Function to ballast vessel to required draft
+
+        Args:
+            required_draft (float): draft to ballast to [m]
+
+        Returns:
+            ballast_condition (pd.DataFrame): Dataframe containing the condition of the ballast tanks
+            ballast_status (str): str describing ballast status (error or completed)
+        """
+        required_ballast_mass, required_ballast_lcg = self.define_required_ballast_mass_cog(required_draft)
+        ballast_condition, ballast_status = self.fill_ballast_tanks(required_ballast_mass, required_ballast_lcg)
+
+        return ballast_condition, ballast_status
 
     @property
     def parameters(self) -> SSCVNavalParameters:
